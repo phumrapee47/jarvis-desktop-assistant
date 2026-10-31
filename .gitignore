@@ -1,0 +1,29 @@
+# ===== ความลับ / ข้อมูลส่วนตัว (ห้ามขึ้น git เด็ดขาด) =====
+.env
+credentials.json
+token.json
+client_secret*.json
+# ความจำและเตือนส่วนตัวของผู้ใช้
+memory.json
+*.pem
+*.key
+
+# ===== log / ไฟล์ที่ระบบสร้างขณะรัน =====
+*.log
+*.log.1
+*.tmp
+quit.flag
+claude_code_results/
+command_logs/
+ack.mp3
+
+# ===== ไฟล์ขนาดใหญ่ / ติดตั้งใหม่ได้ (ดู README) =====
+gesture_env/
+models/
+__pycache__/
+*.pyc
+
+# ===== อื่นๆ =====
+.claude/
+.vscode/
+.idea/

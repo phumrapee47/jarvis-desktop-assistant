@@ -1,0 +1,5 @@
+# ไลบรารีสำหรับโหมดท่ามือ ติดตั้งใน venv แยก (gesture_env) เพื่อไม่ให้ชนกับไลบรารีหลัก
+#   python -m venv gesture_env
+#   gesture_env\Scripts\python -m pip install -r gesture_requirements.txt
+mediapipe>=1.1
+opencv-python

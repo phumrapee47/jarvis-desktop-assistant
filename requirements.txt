@@ -1,0 +1,14 @@
+anthropic
+faster-whisper
+openwakeword
+sounddevice
+numpy
+edge-tts
+pygame
+PyQt6
+google-api-python-client
+google-auth-oauthlib
+pvporcupine
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*
+Pillow
