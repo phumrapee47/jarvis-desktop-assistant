@@ -38,9 +38,36 @@ def _next_id(items):
     return max([i["id"] for i in items], default=0) + 1
 
 
+MIN_QUERY = 2  # คำค้นสั้นกว่านี้กว้างเกินไป (เช่น "a" ตรงกับแทบทุกอัน)
+
+
 def _match(query, items):
-    q = query.lower().strip()
+    """คืนรายการที่ตรงกับคำค้น: "#N" = ตาม id, ตรงเป๊ะมาก่อน, ไม่งั้นข้อความที่มีคำค้นอยู่ข้างใน
+    คำค้นว่าง/ว่างเปล่า/สั้นเกินไป = ไม่ตรงอะไรเลย (เดิม "" อยู่ในทุกสตริง จึงตรงทุกอัน แล้วลบหมด: issue #1)"""
+    q = (query or "").strip().lower()
+    m = re.fullmatch(r"#(\d+)", q)
+    if m:
+        return [i for i in items if i["id"] == int(m.group(1))]
+    if len(q) < MIN_QUERY:
+        return []
+    exact = [i for i in items if i["text"].strip().lower() == q]
+    if exact:
+        return exact
     return [i for i in items if q in i["text"].lower() or _score(q, i["text"]) >= 0.8]
+
+
+def _select(query, items, noun):
+    """เลือกเป้าหมายสำหรับลบ: ต้องได้ "พอดี 1 อัน" เท่านั้น คืน (item, None) หรือ (None, ข้อความอธิบายว่าทำไมไม่ลบ)"""
+    q = (query or "").strip()
+    hit = _match(q, items)
+    if not hit:
+        if len(q) < MIN_QUERY and not re.fullmatch(r"#\d+", q):
+            return None, f"ระบุคำค้นอย่างน้อย {MIN_QUERY} ตัวอักษร หรือใช้ #หมายเลข (ดูหมายเลขจากรายการ) จึงยังไม่ได้ลบอะไร"
+        return None, f"ไม่พบ{noun}ที่ตรงกับ '{q}' จึงยังไม่ได้ลบอะไร"
+    if len(hit) > 1:
+        return None, (f"ตรงกับ{noun}หลายอัน จึงยังไม่ได้ลบอะไร ระบุให้ชัดขึ้นหรือใช้หมายเลข: "
+                      + "; ".join(f"#{i['id']} {i['text']}" for i in hit[:5]))
+    return hit[0], None
 
 
 # ---------- ความจำ ----------
@@ -62,19 +89,17 @@ def remember(text):
 def forget(query):
     with _lock:
         d = _load()
-        hit = _match(query, d["notes"])
-        if not hit:
-            return f"ไม่พบโน้ตที่ตรงกับ '{query}'"
-        if len(hit) > 3:
-            return "ตรงกับโน้ตหลายอัน ระบุให้ชัดขึ้น: " + "; ".join(n["text"] for n in hit[:5])
-        d["notes"] = [n for n in d["notes"] if n not in hit]
+        target, why = _select(query, d["notes"], "โน้ต")
+        if why:
+            return why
+        d["notes"] = [n for n in d["notes"] if n is not target]
         _save(d)
-    return "ลืมแล้ว: " + "; ".join(n["text"] for n in hit)
+    return "ลืมแล้ว: " + target["text"]
 
 
 def list_memories():
     notes = _load()["notes"]
-    return "โน้ตที่จำไว้:\n" + "\n".join(f"- {n['text']}" for n in notes) if notes else "ยังไม่มีโน้ตที่จำไว้"
+    return "โน้ตที่จำไว้:\n" + "\n".join(f"- #{n['id']} {n['text']}" for n in notes) if notes else "ยังไม่มีโน้ตที่จำไว้"
 
 
 # ---------- เตือน ----------
@@ -106,19 +131,19 @@ def list_reminders():
     if not rs:
         return "ไม่มีเตือนที่ตั้งไว้"
     return "เตือนที่ตั้งไว้:\n" + "\n".join(
-        f"- {dt.datetime.fromisoformat(r['due']):%d/%m %H:%M} {r['text']}" + (f" ({r['repeat']})" if r.get("repeat", "none") != "none" else "")
+        f"- #{r['id']} {dt.datetime.fromisoformat(r['due']):%d/%m %H:%M} {r['text']}" + (f" ({r['repeat']})" if r.get("repeat", "none") != "none" else "")
         for r in rs)
 
 
 def cancel_reminder(query):
     with _lock:
         d = _load()
-        hit = _match(query, d["reminders"])
-        if not hit:
-            return f"ไม่พบเตือนที่ตรงกับ '{query}'"
-        d["reminders"] = [r for r in d["reminders"] if r not in hit]
+        target, why = _select(query, d["reminders"], "เตือน")
+        if why:
+            return why
+        d["reminders"] = [r for r in d["reminders"] if r is not target]
         _save(d)
-    return "ยกเลิกเตือนแล้ว: " + "; ".join(r["text"] for r in hit)
+    return "ยกเลิกเตือนแล้ว: " + target["text"]
 
 
 def _advance(due, repeat, now):

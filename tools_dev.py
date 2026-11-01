@@ -71,17 +71,38 @@ def find_project(name):
     return None, f"ไม่พบโปรเจกต์ '{name}' ใกล้เคียง: " + ", ".join(n for _, n in ranked[:5])
 
 
+def git_toplevel(path):
+    """รากของ working tree ที่ path อยู่ข้างใน (ทำให้เป็นรูปแบบเทียบกันได้) หรือ None ถ้าไม่ใช่ repo / git ใช้ไม่ได้ / เกินเวลา
+
+    ถามจาก git เอง (ไม่เช็คว่ามีโฟลเดอร์ .git) เพราะใน worktree และ submodule ".git" เป็น "ไฟล์" ที่ชี้ไป git dir จริง
+    (issue #2) และยังกัน .git ปลอม/พัง (ไฟล์ขยะ, โฟลเดอร์ว่าง) ไปในตัว"""
+    try:
+        rc, out, _ = _run(["git", "rev-parse", "--show-toplevel"], cwd=path, timeout=10)
+    except Exception:  # หมดเวลา / ไม่มี git / path หาย: ถือว่าไม่ใช่ repo ไม่ให้ Agent ล้ม
+        return None
+    return os.path.normcase(os.path.realpath(out)) if rc == 0 and out else None
+
+
+def is_repo_root(path):
+    """True เมื่อ path เป็น "ราก" ของ working tree (repo ปกติ / worktree / submodule) โฟลเดอร์ย่อยใน repo อื่นไม่นับ"""
+    top = git_toplevel(path)
+    return bool(top) and top == os.path.normcase(os.path.realpath(path))
+
+
 def git_status(project):
     path, err = find_project(project)
     if err:
         return err
-    if not os.path.isdir(os.path.join(path, ".git")):
-        return f"{os.path.basename(path)} ไม่ใช่ git repo"
-    _, branch, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
-    _, status, _ = _run(["git", "status", "--porcelain"], cwd=path)
-    rc, ab, _ = _run(["git", "rev-list", "--left-right", "--count", "@{u}...HEAD"], cwd=path)
+    if not is_repo_root(path):
+        return f"{os.path.basename(path)} ไม่ใช่ git repo (หรืออ่านด้วย git ไม่ได้)"
+    try:
+        _, branch, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+        _, status, _ = _run(["git", "status", "--porcelain"], cwd=path)
+        rc, ab, _ = _run(["git", "rev-list", "--left-right", "--count", "@{u}...HEAD"], cwd=path)
+        _, log, _ = _run(["git", "log", "-5", "--pretty=format:%h %s (%cr)"], cwd=path)
+    except Exception as e:
+        return f"อ่านสถานะ git ของ {os.path.basename(path)} ไม่สำเร็จ: {type(e).__name__}"
     behind_ahead = f"ตามหลัง/นำหน้า remote: {ab.split()[0]}/{ab.split()[1]}" if rc == 0 and len(ab.split()) == 2 else "ไม่มี upstream"
-    _, log, _ = _run(["git", "log", "-5", "--pretty=format:%h %s (%cr)"], cwd=path)
     n = len([l for l in status.splitlines() if l.strip()])
     return (f"โปรเจกต์ {os.path.basename(path)} branch {branch} | ไฟล์ที่ยังไม่ commit: {n} | {behind_ahead}\n"
             f"commit ล่าสุด:\n{log}")
@@ -90,13 +111,18 @@ def git_status(project):
 def recent_activity(days=1):
     """สรุปงานของผู้ใช้ทุก repo ใน Documents (ใช้ทำ standup)"""
     days = max(1, min(int(days), 30))
-    _, email, _ = _run(["git", "config", "--global", "user.email"])
+    try:
+        _, email, _ = _run(["git", "config", "--global", "user.email"])
+    except Exception:
+        return "อ่านค่า git ไม่สำเร็จ (git ไม่ตอบสนองหรือไม่ได้ติดตั้ง)"
     lines = []
     for name in _all_projects():
         path = os.path.join(DOCS, name)
-        if not os.path.isdir(os.path.join(path, ".git")):
+        if not os.path.exists(os.path.join(path, ".git")):  # กรองเร็วก่อน (ไฟล์หรือโฟลเดอร์ก็ได้) แล้วให้ git ยืนยันอีกที
             continue
         try:
+            if not is_repo_root(path):
+                continue
             _, log, _ = _run(["git", "log", f"--since={days} days ago", f"--author={email}", "--no-merges",
                               "--pretty=format:%s"], cwd=path)
             _, st, _ = _run(["git", "status", "--porcelain"], cwd=path)
@@ -181,9 +207,12 @@ def claude_code_edit(project, task):
     if err:
         return err
     name = os.path.basename(path)
-    if not os.path.isdir(os.path.join(path, ".git")):
-        return f"{name} ไม่ใช่ git repo ให้แก้ไฟล์ไม่ได้ เพราะย้อนกลับไม่ได้"
-    _, st, _ = _run(["git", "status", "--porcelain"], cwd=path)
+    if not is_repo_root(path):
+        return f"{name} ไม่ใช่ git repo (หรืออ่านด้วย git ไม่ได้) ให้แก้ไฟล์ไม่ได้ เพราะย้อนกลับไม่ได้"
+    try:
+        _, st, _ = _run(["git", "status", "--porcelain"], cwd=path)
+    except Exception as e:
+        return f"ตรวจสถานะ git ของ {name} ไม่สำเร็จ ({type(e).__name__}) จึงยังไม่แก้ไฟล์"
     if st.strip():
         return f"{name} มีไฟล์ที่ยังไม่ commit ({len(st.splitlines())} ไฟล์) ให้ผู้ใช้ commit หรือ stash ก่อน เพื่อไม่ให้งานเดิมปนกับที่ Claude Code แก้"
     exe = shutil.which("claude")
